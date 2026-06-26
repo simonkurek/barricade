@@ -1,0 +1,7 @@
+☐ refactor from wall[] to Map<Position, Wall | null>
+☐ create dfs algorithm (maybe not?)
+☐ create bfs algorithm
+☐ check for winning state
+☐ ui for visualising and testing purposes
+☐ minimax with alpha beta optimalisation
+☐ bot for playing

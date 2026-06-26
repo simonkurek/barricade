@@ -116,7 +116,7 @@ export class Engine {
     if (!(gameState.getCurrentPlayer().getAvailableWalls() > 0)){
       return false
     }
-    return !!gameState.getBoard().getWalls().filter((wall) => {
+    const willCauseConflictingWalls = !!gameState.getBoard().getWalls().filter((wall) => {
       const newWall = move.getWall()!
       const newWallPosition = newWall.getPosition()
       if (
@@ -146,6 +146,10 @@ export class Engine {
         }
       }
     });
+
+    if (willCauseConflictingWalls) return false
+
+    return this.isPieceHavePathToWin(gameState, move)
   }
   
   private validatePieceMove(gameState: GameState, move: Move): boolean {
@@ -209,5 +213,11 @@ export class Engine {
       if (conflictingWalls) return false
     }
     return true;
+  }
+
+  isPieceHavePathToWin(gameState: GameState, move: Move): boolean {
+    const targetPiece = gameState.getCurrentPlayer().getPiece()
+
+    // probably to use DFS as we dont need shortest path here
   }
 }
