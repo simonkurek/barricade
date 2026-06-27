@@ -1,0 +1,17 @@
+{
+  "name": "barricade",
+  "version": "0.1.0",
+  "description": "A Quoridor-style strategy game engine (barricade.gg rules).",
+  "module": "src/main.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "dev": "bun --hot src/ui/server.ts",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^6.0.3"
+  }
+}

@@ -17,6 +17,9 @@ export class Game {
   }
 
   public executeMove(move: Move, player: Player){
+    if (this.isOver()) {
+      throw new Error("Game is already over")
+    }
     if (player.getId() !== this.state.getCurrentPlayer().getId()) {
       throw new Error("Other player turn")
     }
@@ -25,6 +28,16 @@ export class Game {
       throw new Error("Illegal move!")
     }
     this.state.transform(move)
+  }
+
+  /** The player who has won, or null if the game is still in progress. */
+  public getWinner(): Player | null {
+    return this.engine.getWinner(this.state)
+  }
+
+  /** Whether the game has finished (a player has reached their goal row). */
+  public isOver(): boolean {
+    return this.engine.isWinningState(this.state)
   }
 }
 
@@ -68,7 +81,48 @@ export class GameState {
       const targetPiece = this.currentPlayer.getPiece()
       targetPiece.updatePosition(move.getCell()!)
     }
-    this.flipCurrentPlayer()
+    // Once a piece has reached its goal row the game is won, so the turn stays
+    // with the winner rather than flipping to the (now irrelevant) opponent.
+    if (!this.hasWinner()) {
+      this.flipCurrentPlayer()
+    }
+  }
+
+  /**
+   * A deep, independent copy of this state. Players, the board, and the pieces
+   * are cloned; the immutable leaves (BoardCell, Wall, WallOrientation) are
+   * shared since they are never mutated in place. The clone preserves whose turn
+   * it is — the GameState constructor defaults currentPlayer to players[0], so
+   * we re-point it at the cloned player matching the original's turn.
+   */
+  public clone(): GameState {
+    const players = this.players.map(player => player.clone()) as [Player, Player]
+    const cloned = new GameState(players, this.board.clone())
+    cloned.currentPlayer = players.find(
+      player => player.getId() === this.currentPlayer.getId()
+    )!
+    return cloned
+  }
+
+  /**
+   * Non-mutating transition: returns a fresh state with `move` applied, leaving
+   * this state untouched. This is the primitive a minimax / alpha-beta search is
+   * built on — descend into a child position without corrupting the parent.
+   * Callers must pass a legal move (move generation guarantees this);
+   * `applyMove` does not re-validate.
+   */
+  public applyMove(move: Move): GameState {
+    const next = this.clone()
+    next.transform(move)
+    return next
+  }
+
+  /** True once any player's piece sits on its goal row — see Piece.getGoalRow. */
+  private hasWinner(): boolean {
+    return this.players.some(player => {
+      const piece = player.getPiece()
+      return piece.getPosition().getY() === piece.getGoalRow()
+    })
   }
 }
 
@@ -104,6 +158,13 @@ export class Player {
   public useWall() {
     return this.availableWalls--
   }
+
+  /** A copy with its own piece and wall count — see GameState.clone. */
+  public clone(): Player {
+    const copy = new Player(this.id, this.name, this.piece.clone())
+    copy.availableWalls = this.availableWalls
+    return copy
+  }
 }
 
 export class Board {
@@ -119,6 +180,14 @@ export class Board {
 
   public addWall(wall: Wall) {
     return this.walls.push(wall)
+  }
+
+  /**
+   * A copy with its own walls array. Wall objects are immutable, so copying the
+   * array is enough to isolate later addWall calls from the original board.
+   */
+  public clone(): Board {
+    return new Board([...this.walls])
   }
 }
 
@@ -231,8 +300,24 @@ export class Piece {
     return this.position;
   }
 
+  /**
+   * The row this piece must reach to win. By convention RED races to the top
+   * row (y = 0) and BLUE races to the bottom row (y = BOARD_SIZE - 1).
+   */
+  public getGoalRow(): number {
+    return this.color === PieceColor.RED ? 0 : BOARD_SIZE - 1;
+  }
+
   public updatePosition(newPosition: BoardCell){
     return this.position = newPosition
+  }
+
+  /**
+   * A copy of this piece. BoardCell is immutable (updatePosition swaps in a new
+   * one rather than mutating it), so the position can be shared with the copy.
+   */
+  public clone(): Piece {
+    return new Piece(this.color, this.position)
   }
 }
 

@@ -1,7 +1,14 @@
-☐ refactor from wall[] to Map<Position, Wall | null>
+☐ refactor from wall[] to Map<Position, Wall | null>  (note: BFS uses a derived blocked-edge Set instead; array kept as source of truth)
 ☐ create dfs algorithm (maybe not?)
-☐ create bfs algorithm
-☐ check for winning state
-☐ ui for visualising and testing purposes
-☐ minimax with alpha beta optimalisation
-☐ bot for playing
+✔ create bfs algorithm  (isPieceHavePathToWin in simulation.engine.ts)
+✔ jumping / diagonal-jump over adjacent opponent (legalDestinations in simulation.engine.ts)
+✔ check for winning state  (getWinner / isWinningState in simulation.engine.ts)
+✔ unify validatePieceMove wall checks with buildBlockedEdges
+✔ ui for visualising and testing purposes  (bun full-stack UI in src/ui/, run `bun dev`)
+✔ simulation primitive for search  (GameState.clone / applyMove — immutable transitions, game-manager.ts)
+✔ minimax with alpha beta optimalisation  (engine/search.ts — findBestMove, negamax + alpha-beta + move ordering)
+   ✔ position evaluation heuristic (evaluate() in engine/evaluation.ts — path-diff + walls; shortestPathToGoal)
+   ✔ search over engine.calculatePossibleMoves + state.applyMove (negamax + alpha-beta)
+   FIXED ALONG THE WAY: validateWallMove was rejecting EVERY wall (!!array always true) — walls never placeable
+   future: tune PATH/WALL weights (bot walls aggressively early); transposition table; iterative deepening
+✔ bot for playing  (wired findBestMove into the UI — "Bot plays BLUE" toggle + depth selector, src/ui/app.ts)

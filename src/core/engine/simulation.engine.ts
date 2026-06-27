@@ -1,16 +1,4 @@
-import { BOARD_SIZE, BoardCell, GameState, LENGTH_OF_WALL, Move, MoveType, Piece, PositionOffset, Wall, WallOrientation } from "../game-manager";
-
-export enum MovementAxis {
-  X = "X",
-  Y = "Y"
-}
-
-export enum MovementDirection {
-  LEFT = "LEFT",
-  RIGHT = "RIGHT",
-  UP = "UP",
-  DOWN = "DOWN"
-}
+import { BOARD_SIZE, BoardCell, GameState, LENGTH_OF_WALL, Move, MoveType, Piece, Player, PositionOffset, Wall, WallOrientation } from "../game-manager";
 
 export const ONE_UP_OFFSET = new PositionOffset(0, -1)
 export const ONE_DOWN_OFFSET = new PositionOffset(0, 1)
@@ -57,6 +45,101 @@ export const tryToCreateWall = (boardCell: BoardCell, orientation: WallOrientati
   }
 }
 
+const coordKey = (x: number, y: number): string => `${x},${y}`
+
+const samePosition = (a: BoardCell, b: BoardCell): boolean =>
+  a.getX() === b.getX() && a.getY() === b.getY()
+
+/**
+ * The two offsets perpendicular to a step. Used for diagonal sidesteps when a
+ * straight jump over the opponent is blocked: a horizontal step yields the
+ * up/down sidesteps, a vertical step yields the left/right ones.
+ */
+const perpendicularOffsets = (offset: PositionOffset): [PositionOffset, PositionOffset] => [
+  new PositionOffset(offset.getY(), offset.getX()),
+  new PositionOffset(-offset.getY(), -offset.getX()),
+]
+
+/**
+ * A direction-agnostic key for the edge (groove) between two orthogonally
+ * adjacent cells, so a step and its reverse hash to the same value.
+ */
+const edgeKey = (ax: number, ay: number, bx: number, by: number): string => {
+  const a = coordKey(ax, ay)
+  const b = coordKey(bx, by)
+  return a < b ? `${a}|${b}` : `${b}|${a}`
+}
+
+/**
+ * Builds the set of board edges that the given walls block. Each wall spans two
+ * cells and therefore closes two parallel steps:
+ *  - a HORIZONTAL wall at (x, y) blocks the vertical steps in columns x and x+1
+ *    across the groove between rows y and y+1;
+ *  - a VERTICAL wall at (x, y) blocks the horizontal steps in rows y and y+1
+ *    across the groove between columns x and x+1.
+ */
+export const buildBlockedEdges = (walls: Wall[]): Set<string> => {
+  const blocked = new Set<string>()
+  for (const wall of walls) {
+    const x = wall.getPosition().getX()
+    const y = wall.getPosition().getY()
+    if (wall.getOrientation().equals(WallOrientation.HORIZONTAL)) {
+      blocked.add(edgeKey(x, y, x, y + 1))
+      blocked.add(edgeKey(x + 1, y, x + 1, y + 1))
+    } else {
+      blocked.add(edgeKey(x, y, x + 1, y))
+      blocked.add(edgeKey(x, y + 1, x + 1, y + 1))
+    }
+  }
+  return blocked
+}
+
+/**
+ * Breadth-first search for the fewest steps a piece needs to reach any cell on
+ * its goal row, treating blocked edges as impassable and ignoring pieces (a pawn
+ * never permanently blocks a path — it can be jumped or stepped around — so only
+ * walls matter). Returns the step count, 0 if the piece already sits on its goal
+ * row, or null if walls have sealed every route (which the rules forbid, but
+ * callers should still handle).
+ *
+ * BFS over an unweighted grid, so the first time the goal row is dequeued its
+ * recorded distance is the shortest. Shared by the path-to-win legality guard
+ * (distance !== null) and the evaluation heuristic (the distance itself).
+ */
+export const shortestPathToGoal = (piece: Piece, blockedEdges: Set<string>): number | null => {
+  const goalRow = piece.getGoalRow()
+  const offsets = [ONE_UP_OFFSET, ONE_DOWN_OFFSET, ONE_LEFT_OFFSET, ONE_RIGHT_OFFSET]
+
+  const start = piece.getPosition()
+  const queue: BoardCell[] = [start]
+  const distance = new Map<string, number>([[coordKey(start.getX(), start.getY()), 0]])
+
+  for (let head = 0; head < queue.length; head++) {
+    const current = queue[head]!
+    const currentDistance = distance.get(coordKey(current.getX(), current.getY()))!
+    if (current.getY() === goalRow) {
+      return currentDistance
+    }
+    for (const offset of offsets) {
+      const step = tryToTransform(current, offset)
+      if (step.status !== OperationResultStatus.SUCCESS) {
+        continue
+      }
+      const neighbour = step.transformed
+      const neighbourKey = coordKey(neighbour.getX(), neighbour.getY())
+      if (distance.has(neighbourKey)) {
+        continue
+      }
+      if (blockedEdges.has(edgeKey(current.getX(), current.getY(), neighbour.getX(), neighbour.getY()))) {
+        continue
+      }
+      distance.set(neighbourKey, currentDistance + 1)
+      queue.push(neighbour)
+    }
+  }
+  return null
+}
+
 export class Engine {
 
   public calculatePossibleMoves(gameState: GameState): Move[] {
@@ -66,20 +149,31 @@ export class Engine {
     ]
   }
 
+  /**
+   * The game is won the moment a piece reaches any cell on its goal row
+   * (RED → top row y=0, BLUE → bottom row y=8). This is the only win condition
+   * the engine can observe from board state; resignation and timeout are handled
+   * outside the rules layer. Returns the winning player, or null if neither
+   * piece has reached its goal yet.
+   */
+  public getWinner(gameState: GameState): Player | null {
+    return gameState.getPlayers().find(player => {
+      const piece = player.getPiece()
+      return piece.getPosition().getY() === piece.getGoalRow()
+    }) ?? null
+  }
+
+  /** Whether the game has been won — see getWinner for the win condition. */
+  public isWinningState(gameState: GameState): boolean {
+    return this.getWinner(gameState) !== null
+  }
+
   public calculatePossibleMovesForPiece(gameState: GameState, piece: Piece): Move[] {
-    const pieceLocation = piece.getPosition()
+    const blockedEdges = buildBlockedEdges(gameState.getBoard().getWalls())
+    const opponentCell = this.getOpponentCell(gameState, piece)
 
-    const potentialMoves = [
-      tryToTransform(pieceLocation, ONE_DOWN_OFFSET),
-      tryToTransform(pieceLocation, ONE_UP_OFFSET),
-      tryToTransform(pieceLocation, ONE_RIGHT_OFFSET),
-      tryToTransform(pieceLocation, ONE_LEFT_OFFSET),
-    ].filter(transformationResult => transformationResult.status === OperationResultStatus.SUCCESS)
-      .map(transformationResult => transformationResult.transformed)
+    return this.legalDestinations(piece.getPosition(), opponentCell, blockedEdges)
       .map(targetCell => new Move(gameState.getCurrentPlayer(), targetCell))
-      .filter(potentialMove => this.isLegalMove(gameState, potentialMove))
-
-    return potentialMoves;
   }
 
   public calculatePossibleMovesForWalls(gameState: GameState): Move[] {
@@ -112,112 +206,153 @@ export class Engine {
     return this.validateWallMove(gameState, move)
   }
 
-  private validateWallMove(gameState: GameState, move: Move): boolean {
-    if (!(gameState.getCurrentPlayer().getAvailableWalls() > 0)){
+  /**
+   * Two placed walls conflict when they cannot physically coexist:
+   *  - they share the same anchor slot — either an identical placement, or a
+   *    perpendicular pair crossing through the shared centre post; or
+   *  - they share an orientation and overlap along their length. A wall spans
+   *    LENGTH_OF_WALL cells, so two collinear walls one slot apart share a
+   *    segment and overlap; two slots apart sit end-to-end and are fine.
+   */
+  private wallsConflict(a: Wall, b: Wall): boolean {
+    const ax = a.getPosition().getX()
+    const ay = a.getPosition().getY()
+    const bx = b.getPosition().getX()
+    const by = b.getPosition().getY()
+
+    if (ax === bx && ay === by) {
+      return true
+    }
+    if (!a.getOrientation().equals(b.getOrientation())) {
       return false
     }
-    const willCauseConflictingWalls = !!gameState.getBoard().getWalls().filter((wall) => {
-      const newWall = move.getWall()!
-      const newWallPosition = newWall.getPosition()
-      if (
-        wall.getPosition().getX() === newWallPosition.getX() &&
-        wall.getPosition().getY() === newWallPosition.getY()
-      ) {
-        return false
-      }
+    if (a.getOrientation().equals(WallOrientation.HORIZONTAL)) {
+      return ay === by && Math.abs(ax - bx) < LENGTH_OF_WALL
+    }
+    return ax === bx && Math.abs(ay - by) < LENGTH_OF_WALL
+  }
 
-      if(!newWall.getOrientation().equals(wall.getOrientation())) return true
-
-      if (newWall.getOrientation().equals(WallOrientation.HORIZONTAL)){
-        if (
-            wall.getPosition().getX() + 1 === newWallPosition.getX() ||
-            wall.getPosition().getX() - 1 === newWallPosition.getX()
-          ) {
-            return false
-        }
-      }
-
-      if (newWall.getOrientation().equals(WallOrientation.VERTICAL)){
-        if (
-            wall.getPosition().getY() + 1 === newWallPosition.getY() ||
-            wall.getPosition().getY() - 1 === newWallPosition.getY()
-          ) {
-            return false
-        }
-      }
-    });
-
-    if (willCauseConflictingWalls) return false
-
+  private validateWallMove(gameState: GameState, move: Move): boolean {
+    if (gameState.getCurrentPlayer().getAvailableWalls() <= 0) {
+      return false
+    }
+    const newWall = move.getWall()!
+    const conflicts = gameState.getBoard().getWalls()
+      .some(existing => this.wallsConflict(newWall, existing))
+    if (conflicts) {
+      return false
+    }
     return this.isPieceHavePathToWin(gameState, move)
   }
   
+  /**
+   * A piece move is legal when its target is one of the destinations reachable
+   * from the piece's current cell — a plain orthogonal step, a straight jump
+   * over an adjacent opponent, or a diagonal sidestep when that jump is blocked.
+   * Both validation and move generation share `legalDestinations`, so they can
+   * never disagree.
+   */
   private validatePieceMove(gameState: GameState, move: Move): boolean {
     const targetCell = move.getTarget() as BoardCell;
-    const startCell = gameState.getCurrentPlayer().getPiece().getPosition()
-    const xVector = targetCell.getX() - startCell.getX();
-    const yVector = targetCell.getY() - startCell.getY();
-    if ((xVector ^ yVector) !== 1 || (xVector === 1 || yVector === 1)){
-      return false;
-    }
-    const movementAxis = xVector > 0 ? MovementAxis.X : MovementAxis.Y
-    let movementDirection: MovementDirection
-    if (movementAxis === MovementAxis.X) {
-      movementDirection = xVector > 0 ? MovementDirection.RIGHT : MovementDirection.LEFT
-    } else {
-      movementDirection = yVector > 0 ? MovementDirection.DOWN : MovementDirection.UP
-    }
-    // improve implementing stategized offset vector
-    if (movementDirection === MovementDirection.RIGHT){
-      const conflictingWalls = !!gameState.getBoard().getWalls().filter(wall => 
-        wall.getOrientation().equals(WallOrientation.VERTICAL) && 
-        wall.getPosition().getX() === startCell.getX() &&
-        (
-          wall.getPosition().getY() === startCell.getY() || 
-          wall.getPosition().getY() === startCell.getY() + 1
-        )
-      ).length
-      if (conflictingWalls) return false
-    }
-    if (movementDirection === MovementDirection.DOWN){
-      const conflictingWalls = !!gameState.getBoard().getWalls().filter(wall => 
-        wall.getOrientation().equals(WallOrientation.HORIZONTAL) && 
-        wall.getPosition().getY() === startCell.getY() &&
-        (
-          wall.getPosition().getX() === startCell.getX() || 
-          wall.getPosition().getX() === startCell.getX() + 1
-        )
-      ).length
-      if (conflictingWalls) return false
-    }
-    if (movementDirection === MovementDirection.UP){
-      const conflictingWalls = !!gameState.getBoard().getWalls().filter(wall => 
-        wall.getOrientation().equals(WallOrientation.HORIZONTAL) && 
-        wall.getPosition().getY() === startCell.getY() &&
-        (
-          wall.getPosition().getX() === startCell.getX() || 
-          wall.getPosition().getX() === startCell.getX() - 1
-        )
-      ).length
-      if (conflictingWalls) return false
-    }
-    if (movementDirection === MovementDirection.LEFT){
-      const conflictingWalls = !!gameState.getBoard().getWalls().filter(wall => 
-        wall.getOrientation().equals(WallOrientation.VERTICAL) && 
-        wall.getPosition().getX() === startCell.getX() &&
-        (
-          wall.getPosition().getY() === startCell.getY() || 
-          wall.getPosition().getY() === startCell.getY() - 1
-        )
-      ).length
-      if (conflictingWalls) return false
-    }
-    return true;
+    const piece = gameState.getCurrentPlayer().getPiece()
+    const blockedEdges = buildBlockedEdges(gameState.getBoard().getWalls())
+    const opponentCell = this.getOpponentCell(gameState, piece)
+
+    return this.legalDestinations(piece.getPosition(), opponentCell, blockedEdges)
+      .some(cell => samePosition(cell, targetCell))
   }
 
-  isPieceHavePathToWin(gameState: GameState, move: Move): boolean {
-    const targetPiece = gameState.getCurrentPlayer().getPiece()
+  /** The cell occupied by the player who is NOT moving this piece, if any. */
+  private getOpponentCell(gameState: GameState, piece: Piece): BoardCell | undefined {
+    return gameState.getPlayers()
+      .map(player => player.getPiece())
+      .find(other => other !== piece)
+      ?.getPosition()
+  }
 
-    // probably to use DFS as we dont need shortest path here
+  /**
+   * Returns the cell reached by stepping `offset` from `from`, or null if that
+   * step leaves the board or is closed by a wall.
+   */
+  private tryStep(from: BoardCell, offset: PositionOffset, blockedEdges: Set<string>): BoardCell | null {
+    const step = tryToTransform(from, offset)
+    if (step.status !== OperationResultStatus.SUCCESS) {
+      return null
+    }
+    const to = step.transformed
+    if (blockedEdges.has(edgeKey(from.getX(), from.getY(), to.getX(), to.getY()))) {
+      return null
+    }
+    return to
+  }
+
+  /**
+   * Every cell the piece at `start` may legally land on this turn:
+   *  - a plain step into any open, unoccupied orthogonal neighbour;
+   *  - when a neighbour holds the opponent, a straight jump to the cell beyond it
+   *    (if that onward step is open and on-board);
+   *  - if the straight jump is blocked by a wall or the board edge, the diagonal
+   *    sidesteps around the opponent instead.
+   */
+  private legalDestinations(
+    start: BoardCell,
+    opponentCell: BoardCell | undefined,
+    blockedEdges: Set<string>
+  ): BoardCell[] {
+    const directions = [ONE_UP_OFFSET, ONE_DOWN_OFFSET, ONE_LEFT_OFFSET, ONE_RIGHT_OFFSET]
+    const destinations: BoardCell[] = []
+
+    for (const direction of directions) {
+      const neighbour = this.tryStep(start, direction, blockedEdges)
+      if (!neighbour) {
+        continue
+      }
+      if (!opponentCell || !samePosition(neighbour, opponentCell)) {
+        destinations.push(neighbour)
+        continue
+      }
+      // The neighbour is the opponent: attempt a straight jump over them.
+      const straightLanding = this.tryStep(neighbour, direction, blockedEdges)
+      if (straightLanding) {
+        destinations.push(straightLanding)
+        continue
+      }
+      // Straight jump blocked by a wall or the edge: allow diagonal sidesteps.
+      for (const sideways of perpendicularOffsets(direction)) {
+        const diagonalLanding = this.tryStep(neighbour, sideways, blockedEdges)
+        if (diagonalLanding) {
+          destinations.push(diagonalLanding)
+        }
+      }
+    }
+    return destinations
+  }
+
+  /**
+   * A barricade may never completely seal off either player from their goal
+   * row. We build the blocked-edge set from the walls already on the board PLUS
+   * the wall this move wants to place, then confirm that every player can still
+   * reach their goal. Returns true when the move keeps the board solvable.
+   */
+  isPieceHavePathToWin(gameState: GameState, move: Move): boolean {
+    const walls = [...gameState.getBoard().getWalls()]
+    const candidateWall = move.getWall()
+    if (candidateWall) {
+      walls.push(candidateWall)
+    }
+    const blockedEdges = buildBlockedEdges(walls)
+
+    return gameState.getPlayers().every(player =>
+      this.hasPathToGoal(player.getPiece(), blockedEdges)
+    )
+  }
+
+  /**
+   * Whether the piece can still reach its goal row given the blocked edges. A
+   * pawn is solvable exactly when it has a finite shortest path, so this defers
+   * to shortestPathToGoal rather than duplicating the search.
+   */
+  private hasPathToGoal(piece: Piece, blockedEdges: Set<string>): boolean {
+    return shortestPathToGoal(piece, blockedEdges) !== null
   }
 }

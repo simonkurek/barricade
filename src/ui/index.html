@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Barricade — engine playground</title>
+    <style>
+      :root {
+        --cell: 54px;
+        --gap: 12px;
+        --board-bg: #b58863;
+        --cell-bg: #edd6b0;
+        --cell-bg-alt: #e3c79a;
+        --wall: #3b2a1a;
+        --wall-ghost: rgba(59, 42, 26, 0.18);
+        --red: #d64545;
+        --blue: #3b6fd6;
+        --hl: rgba(60, 160, 90, 0.55);
+        --accent: #4aa777;
+
+        --bg: #1b1a18;
+        --card: #262422;
+        --card-2: #2f2c29;
+        --line: #3a3633;
+        --text: #ece8e3;
+        --muted: #948d85;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 14px/1.5 system-ui, -apple-system, sans-serif;
+        background: radial-gradient(1200px 800px at 20% -10%, #262320, var(--bg));
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 40px;
+      }
+      .layout {
+        display: flex;
+        gap: 40px;
+        align-items: center;
+      }
+
+      /* ---- board + coordinate gutters ------------------------------------ */
+      .board-area {
+        display: inline-grid;
+        grid-template-columns: auto auto;
+        grid-template-rows: auto auto;
+        grid-template-areas: "ranks board" "corner files";
+      }
+      .ranks { grid-area: ranks; display: flex; flex-direction: column; padding: var(--gap) 0; gap: var(--gap); }
+      .ranks div {
+        height: var(--cell); width: 20px;
+        display: flex; align-items: center; justify-content: flex-end;
+        padding-right: 7px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums;
+      }
+      .files { grid-area: files; display: flex; padding: 0 var(--gap); gap: var(--gap); }
+      .files div { width: var(--cell); text-align: center; color: var(--muted); font-size: 11px; padding-top: 5px; }
+
+      .board {
+        grid-area: board;
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(9, var(--cell));
+        grid-template-rows: repeat(9, var(--cell));
+        gap: var(--gap);
+        padding: var(--gap);
+        background: var(--board-bg);
+        border-radius: 10px;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+        user-select: none;
+      }
+      .cell {
+        background: var(--cell-bg);
+        border-radius: 5px;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: default;
+      }
+      .cell.dark { background: var(--cell-bg-alt); }
+      .cell.legal { cursor: pointer; }
+      .cell.legal::after {
+        content: "";
+        width: 38%;
+        height: 38%;
+        border-radius: 50%;
+        background: var(--hl);
+      }
+      .cell.legal:hover { outline: 2px solid var(--hl); outline-offset: -2px; }
+      .cell.goal-red::before, .cell.goal-blue::before {
+        content: "";
+        position: absolute; inset: 0;
+        border-radius: 5px;
+        pointer-events: none;
+      }
+      .cell.goal-red::before { box-shadow: inset 0 0 0 2px rgba(214, 69, 69, 0.45); }
+      .cell.goal-blue::before { box-shadow: inset 0 0 0 2px rgba(59, 111, 214, 0.45); }
+
+      .pawn {
+        width: 68%;
+        height: 68%;
+        border-radius: 50%;
+        box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.28), 0 2px 4px rgba(0, 0, 0, 0.3);
+        z-index: 1;
+      }
+      .pawn.RED { background: var(--red); }
+      .pawn.BLUE { background: var(--blue); }
+      .pawn.you { outline: 3px solid rgba(255, 255, 255, 0.7); outline-offset: 2px; }
+
+      /* Walls + wall ghosts are absolutely positioned over the board. */
+      .wall {
+        position: absolute;
+        background: var(--wall);
+        border-radius: 3px;
+        z-index: 2;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+      }
+      .wall-ghost {
+        position: absolute;
+        background: var(--wall-ghost);
+        border-radius: 3px;
+        z-index: 3;
+        cursor: pointer;
+        transition: background 0.08s;
+      }
+      .wall-ghost:hover { background: var(--wall); }
+
+      /* ---- side panel ---------------------------------------------------- */
+      .panel { width: 300px; display: flex; flex-direction: column; gap: 14px; }
+      .title h1 { font-size: 20px; margin: 0; letter-spacing: 0.3px; }
+      .title .muted { color: var(--muted); font-size: 12px; }
+
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px;
+      }
+      .card > .head {
+        font-size: 11px; text-transform: uppercase; letter-spacing: 0.7px;
+        color: var(--muted); margin-bottom: 10px; font-weight: 600;
+      }
+      .field { display: flex; flex-direction: column; gap: 7px; }
+      .field + .field { margin-top: 12px; }
+      .field > .lbl { font-size: 12px; color: var(--muted); }
+
+      /* segmented button group */
+      .seg { display: flex; gap: 6px; }
+      .seg button {
+        flex: 1;
+        font: inherit; font-size: 13px;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        background: var(--card-2);
+        color: var(--text);
+        border-radius: 7px;
+        cursor: pointer;
+        transition: background 0.08s, border-color 0.08s;
+      }
+      .seg button:hover { background: #38342f; }
+      .seg button.active {
+        background: var(--accent); border-color: var(--accent);
+        color: #06231a; font-weight: 600;
+      }
+      .seg button[data-color="RED"].active { background: var(--red); border-color: var(--red); color: #fff; }
+      .seg button[data-color="BLUE"].active { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+      .btn {
+        font: inherit; font-size: 13px;
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        background: var(--card-2);
+        color: var(--text);
+        border-radius: 7px;
+        cursor: pointer;
+        flex: 1;
+      }
+      .btn:hover { background: #38342f; }
+      .row { display: flex; gap: 8px; align-items: center; }
+
+      select {
+        font: inherit; padding: 6px 8px; border: 1px solid var(--line);
+        background: var(--card-2); color: var(--text); border-radius: 7px;
+      }
+      .switch { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+
+      /* player cards */
+      .players { display: flex; flex-direction: column; gap: 8px; }
+      .pcard {
+        display: flex; align-items: center; gap: 10px;
+        padding: 9px 11px; border-radius: 8px;
+        background: var(--card-2); border: 1px solid var(--line);
+        transition: border-color 0.1s, background 0.1s;
+      }
+      .pcard.active { border-color: var(--accent); background: #2c322d; }
+      .pcard .dot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+      .pcard .dot.RED { background: var(--red); }
+      .pcard .dot.BLUE { background: var(--blue); }
+      .pcard .name { font-weight: 600; font-size: 13px; }
+      .pcard .tags { display: flex; gap: 6px; margin-top: 1px; }
+      .pcard .tag {
+        font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+        color: var(--muted); background: #201e1c; border: 1px solid var(--line);
+        padding: 0 5px; border-radius: 4px;
+      }
+      .pcard .meta { margin-left: auto; text-align: right; }
+      .pcard .walls { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+      .pcard .walls-lbl { font-size: 10px; color: var(--muted); }
+      .pcard .turn { margin-left: auto; color: var(--accent); font-size: 11px; font-weight: 600; }
+
+      .banner {
+        padding: 12px; border-radius: 10px; font-weight: 700; font-size: 15px;
+        background: linear-gradient(180deg, #34924a, #2e7d32); color: #fff; text-align: center;
+      }
+      .banner:empty { display: none; }
+
+      .thinking { color: var(--accent); font-size: 12px; min-height: 16px; }
+
+      .log {
+        height: 200px; overflow-y: auto; background: #161513;
+        border-radius: 8px; padding: 8px 10px; font-family: ui-monospace, monospace;
+        font-size: 12px; color: #b3ada6;
+      }
+      .log .turn-row { display: flex; gap: 8px; padding: 1px 0; }
+      .log .num { color: #6f6862; width: 22px; text-align: right; flex: none; }
+      .log .ply { width: 56px; }
+      .log:empty::after { content: "no moves yet"; color: #6f6862; }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+    <div class="board-area">
+      <div class="ranks" id="ranks"></div>
+      <div id="board" class="board"></div>
+      <div class="files" id="files"></div>
+    </div>
+
+    <div class="panel">
+      <div class="title">
+        <h1>Barricade</h1>
+        <div class="muted">engine playground</div>
+      </div>
+
+      <div id="banner" class="banner"></div>
+
+      <div class="card">
+        <div class="head">Players</div>
+        <div class="players" id="status"></div>
+        <div class="thinking" id="thinking"></div>
+      </div>
+
+      <div class="card">
+        <div class="head">Setup</div>
+
+        <div class="field">
+          <div class="lbl">You play as</div>
+          <div class="seg" id="color-seg">
+            <button data-color="RED">Red</button>
+            <button data-color="BLUE">Blue</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="lbl">Opponent</div>
+          <div class="row">
+            <label class="switch"><input type="checkbox" id="bot-toggle" /> Play vs bot</label>
+            <span style="margin-left:auto" class="lbl">depth</span>
+            <select id="bot-depth">
+              <option value="1">1</option>
+              <option value="2" selected>2</option>
+              <option value="3">3</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="row">
+            <button class="btn" id="rotate">⟲ Rotate board</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="head">Action</div>
+        <div class="seg" id="mode-seg">
+          <button data-mode="MOVE" class="active">Move</button>
+          <button data-mode="WALL_H">Wall ─</button>
+          <button data-mode="WALL_V">Wall │</button>
+        </div>
+        <div class="row" style="margin-top: 12px">
+          <button class="btn" id="undo">↩ Undo</button>
+          <button class="btn" id="reset">↻ New game</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="head">Move log</div>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+    </div>
+
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>
