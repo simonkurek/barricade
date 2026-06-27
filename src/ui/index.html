@@ -208,9 +208,31 @@
         padding: 0 5px; border-radius: 4px;
       }
       .pcard .meta { margin-left: auto; text-align: right; }
-      .pcard .walls { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+      .pcard .walls { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
       .pcard .walls-lbl { font-size: 10px; color: var(--muted); }
-      .pcard .turn { margin-left: auto; color: var(--accent); font-size: 11px; font-weight: 600; }
+      .pcard .tag.on { color: var(--accent); border-color: var(--accent); background: #20281f; }
+
+      /* draggable wall tray */
+      .tray { display: flex; gap: 10px; }
+      .chip {
+        flex: 1;
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 12px; border-radius: 8px;
+        background: var(--card-2); border: 1px solid var(--line);
+        cursor: grab;
+        transition: border-color 0.1s, background 0.1s;
+      }
+      .chip:hover { border-color: var(--accent); }
+      .chip:active { cursor: grabbing; }
+      .chip.dragging { border-color: var(--accent); background: #2c322d; }
+      .chip[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+      .chip .bar { background: var(--wall); border-radius: 3px; flex: none; box-shadow: 0 1px 2px rgba(0,0,0,0.4); }
+      .chip .bar.h { width: 40px; height: 11px; }
+      .chip .bar.v { width: 11px; height: 40px; }
+      .chip .lab { font-size: 12px; color: var(--text); }
+      .hint { margin-top: 10px; font-size: 11px; color: var(--muted); }
+
+      .wall-ghost.hover { background: var(--wall); box-shadow: 0 1px 3px rgba(0,0,0,0.45); }
 
       .banner {
         padding: 12px; border-radius: 10px; font-weight: 700; font-size: 15px;
@@ -285,13 +307,10 @@
       </div>
 
       <div class="card">
-        <div class="head">Action</div>
-        <div class="seg" id="mode-seg">
-          <button data-mode="MOVE" class="active">Move</button>
-          <button data-mode="WALL_H">Wall ─</button>
-          <button data-mode="WALL_V">Wall │</button>
-        </div>
-        <div class="row" style="margin-top: 12px">
+        <div class="head" id="wall-head">Walls</div>
+        <div class="tray" id="wall-tray"></div>
+        <div class="hint" id="wall-hint">Drag a wall onto the board · click a dot to move</div>
+        <div class="row" style="margin-top: 14px">
           <button class="btn" id="undo">↩ Undo</button>
           <button class="btn" id="reset">↻ New game</button>
         </div>

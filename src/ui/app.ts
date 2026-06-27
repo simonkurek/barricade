@@ -20,7 +20,7 @@ const PAD = 12;
 const N = BOARD_SIZE;
 const offset = (i: number): number => PAD + i * (CELL + GAP);
 
-type Mode = "MOVE" | "WALL_H" | "WALL_V";
+type Orientation = "HORIZONTAL" | "VERTICAL";
 
 /**
  * A replayable description of a single turn. We never clone GameState (the
@@ -39,7 +39,15 @@ const BLUE_ID = "p2";
 const engine = new Engine();
 let history: Descriptor[] = [];
 let state: GameState = createInitialGameState();
-let mode: Mode = "MOVE";
+
+// --- wall drag-and-drop state ----------------------------------------------
+// While a wall chip is being dragged we paint the legal slots for its
+// orientation and track which one the pointer is nearest to.
+let dragOrientation: Orientation | null = null;
+let hoverWallKey: string | null = null;
+// Legal slots painted during a drag: screen-space centre + how to place it.
+let ghostSlots: { cx: number; cy: number; key: string; desc: Descriptor }[] = [];
+const ghostEls = new Map<string, HTMLDivElement>();
 
 // --- setup / orientation state ---------------------------------------------
 let humanColor: PieceColor = PieceColor.RED; // which side the human controls
@@ -58,6 +66,9 @@ const statusEl = document.getElementById("status") as HTMLDivElement;
 const bannerEl = document.getElementById("banner") as HTMLDivElement;
 const logEl = document.getElementById("log") as HTMLDivElement;
 const thinkingEl = document.getElementById("thinking") as HTMLSpanElement;
+const trayEl = document.getElementById("wall-tray") as HTMLDivElement;
+const wallHeadEl = document.getElementById("wall-head") as HTMLDivElement;
+const wallHintEl = document.getElementById("wall-hint") as HTMLDivElement;
 
 const columnLetter = (x: number): string => String.fromCharCode("a".charCodeAt(0) + x);
 const rowNumber = (y: number): number => BOARD_SIZE - y;
@@ -215,9 +226,10 @@ const render = (): void => {
   // The board is only clickable when the game is live and the bot is not mid-move.
   const interactive = !winner && !thinking && !isBotTurn();
 
-  // Legal piece destinations for the current player (engine-driven).
+  // Legal piece destinations for the current player (engine-driven). Hidden
+  // while dragging a wall so the board isn't cluttered with both at once.
   const legalCells = new Map<string, Descriptor>();
-  if (interactive && mode === "MOVE") {
+  if (interactive && !dragOrientation) {
     for (const move of engine.calculatePossibleMovesForPiece(state, current.getPiece())) {
       const cell = move.getCell()!;
       legalCells.set(`${cell.getX()},${cell.getY()}`, {
@@ -272,30 +284,87 @@ const render = (): void => {
     );
   }
 
-  // Ghost (legal) wall placements for the selected orientation.
-  if (interactive && (mode === "WALL_H" || mode === "WALL_V")) {
-    const wantHorizontal = mode === "WALL_H";
+  // Ghost (legal) wall slots for the orientation currently being dragged.
+  ghostSlots = [];
+  ghostEls.clear();
+  if (interactive && dragOrientation) {
+    const wantHorizontal = dragOrientation === "HORIZONTAL";
     for (const move of engine.calculatePossibleMovesForWalls(state)) {
       const wall = move.getWall()!;
       if (wall.getOrientation().equals(WallOrientation.HORIZONTAL) !== wantHorizontal) continue;
       const wx = wall.getPosition().getX();
       const wy = wall.getPosition().getY();
-      boardEl.appendChild(
-        wallBar(wallAnchorX(wx), wallAnchorY(wy), wantHorizontal, "wall-ghost", () =>
-          playHuman({
-            kind: "wall",
-            x: wx,
-            y: wy,
-            orientation: wantHorizontal ? "HORIZONTAL" : "VERTICAL",
-          })
-        )
-      );
+      const ax = wallAnchorX(wx);
+      const ay = wallAnchorY(wy);
+      const key = `${wx},${wy}`;
+      const desc: Descriptor = { kind: "wall", x: wx, y: wy, orientation: dragOrientation };
+      const el = wallBar(ax, ay, wantHorizontal, "wall-ghost", () => playHuman(desc));
+      if (key === hoverWallKey) el.classList.add("hover");
+      // Centre of the slot in board (screen) space, for nearest-slot hit testing.
+      const cx = offset(ax) + CELL + GAP / 2;
+      const cy = offset(ay) + CELL + GAP / 2;
+      ghostSlots.push({ cx, cy, key, desc });
+      ghostEls.set(key, el);
+      boardEl.appendChild(el);
     }
   }
 
   thinkingEl.textContent = thinking ? "Bot is thinking…" : "";
+  renderTray(interactive);
   renderStatus(winner);
   renderLog();
+};
+
+/** Renders the draggable wall chips for the player on the move. */
+const renderTray = (interactive: boolean): void => {
+  const player = state.getCurrentPlayer();
+  const remaining = player.getAvailableWalls();
+  const canDrag = interactive && remaining > 0;
+
+  wallHeadEl.textContent = `Walls — ${remaining} left`;
+  wallHintEl.textContent = dragOrientation
+    ? "Drop on a highlighted slot to place"
+    : canDrag
+      ? "Drag a wall onto the board · click a dot to move"
+      : remaining === 0
+        ? "No walls remaining"
+        : "Click a dot to move";
+
+  // Don't rebuild the chips mid-drag — that would destroy the drag source and
+  // swallow the dragend event, leaving the drag state stuck.
+  if (dragOrientation) return;
+
+  trayEl.innerHTML = "";
+  for (const orientation of ["HORIZONTAL", "VERTICAL"] as const) {
+    const chip = document.createElement("div");
+    chip.className = "chip";
+    chip.draggable = canDrag;
+    if (!canDrag) chip.setAttribute("aria-disabled", "true");
+
+    const bar = document.createElement("div");
+    bar.className = `bar ${orientation === "HORIZONTAL" ? "h" : "v"}`;
+    const lab = document.createElement("span");
+    lab.className = "lab";
+    lab.textContent = orientation === "HORIZONTAL" ? "Horizontal" : "Vertical";
+    chip.append(bar, lab);
+
+    chip.addEventListener("dragstart", (e) => {
+      if (!canDrag) return;
+      dragOrientation = orientation;
+      hoverWallKey = null;
+      e.dataTransfer?.setData("text/plain", orientation);
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+      chip.classList.add("dragging");
+      render(); // paint the legal slots
+    });
+    chip.addEventListener("dragend", () => {
+      dragOrientation = null;
+      hoverWallKey = null;
+      render();
+    });
+
+    trayEl.appendChild(chip);
+  }
 };
 
 const renderStatus = (winner: Player | null): void => {
@@ -321,6 +390,7 @@ const renderStatus = (winner: Player | null): void => {
       const tags: string[] = [];
       if (isYou) tags.push(`<span class="tag">you</span>`);
       if (isBot) tags.push(`<span class="tag">bot</span>`);
+      if (isCurrent) tags.push(`<span class="tag on">on turn</span>`);
 
       return `
         <div class="pcard${isCurrent ? " active" : ""}">
@@ -329,11 +399,10 @@ const renderStatus = (winner: Player | null): void => {
             <div class="name">${p.getName()}</div>
             <div class="tags">${tags.join("")}</div>
           </div>
-          ${
-            isCurrent
-              ? `<span class="turn">on turn ◀</span>`
-              : `<div class="meta"><div class="walls">${p.getAvailableWalls()}</div><div class="walls-lbl">walls</div></div>`
-          }
+          <div class="meta">
+            <div class="walls">${p.getAvailableWalls()}</div>
+            <div class="walls-lbl">walls</div>
+          </div>
         </div>`;
     })
     .join("");
@@ -362,16 +431,42 @@ const syncSetupUI = (): void => {
   }
 };
 
-// Action mode (Move / Wall ─ / Wall │).
-for (const btn of document.querySelectorAll<HTMLButtonElement>("#mode-seg button[data-mode]")) {
-  btn.addEventListener("click", () => {
-    mode = btn.dataset.mode as Mode;
-    for (const other of document.querySelectorAll("#mode-seg button[data-mode]")) {
-      other.classList.toggle("active", other === btn);
+// Wall drag-and-drop: while a chip is dragged over the board we snap to the
+// nearest legal slot and highlight it; dropping places the wall there.
+boardEl.addEventListener("dragover", (e) => {
+  if (!dragOrientation || ghostSlots.length === 0) return;
+  e.preventDefault(); // required to allow a drop
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+
+  const rect = boardEl.getBoundingClientRect();
+  const px = e.clientX - rect.left;
+  const py = e.clientY - rect.top;
+  let nearest: string | null = null;
+  let best = Infinity;
+  for (const slot of ghostSlots) {
+    const d = (slot.cx - px) ** 2 + (slot.cy - py) ** 2;
+    if (d < best) {
+      best = d;
+      nearest = slot.key;
     }
-    render();
-  });
-}
+  }
+  if (nearest !== hoverWallKey) {
+    // Light-touch update: just move the .hover class, no full re-render.
+    if (hoverWallKey) ghostEls.get(hoverWallKey)?.classList.remove("hover");
+    if (nearest) ghostEls.get(nearest)?.classList.add("hover");
+    hoverWallKey = nearest;
+  }
+});
+
+boardEl.addEventListener("drop", (e) => {
+  if (!dragOrientation || !hoverWallKey) return;
+  e.preventDefault();
+  const slot = ghostSlots.find((s) => s.key === hoverWallKey);
+  dragOrientation = null;
+  hoverWallKey = null;
+  if (slot) playHuman(slot.desc);
+  else render();
+});
 
 // Choose which color the human plays. This redefines who the bot is, so it
 // starts a fresh game and auto-orients the board to the chosen side's view.
